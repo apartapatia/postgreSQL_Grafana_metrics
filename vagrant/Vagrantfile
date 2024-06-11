@@ -1,0 +1,96 @@
+class VagrantPlugins::ProviderVirtualBox::Action::Network
+  def dhcp_server_matches_config?(dhcp_server, config)
+    true
+  end
+end
+
+Vagrant.configure("2") do |config|
+  # Используем образ Ubuntu 20.04
+  config.vm.box = "ubuntu/focal64"
+
+  # Настройки виртуальной машины
+  config.vm.provider "virtualbox" do |vb|
+    vb.name = "just_ai_test_vm"
+    vb.memory = "2048"
+    vb.cpus = 2
+  end
+
+  # Настройка сети
+  config.vm.network "private_network", type: "dhcp"
+
+  # Проброс портов для доступа к Grafana, PostgreSQL и Prometheus
+  config.vm.network "forwarded_port", guest: 3000, host: 3000  # Grafana
+  config.vm.network "forwarded_port", guest: 5432, host: 5432  # PostgreSQL
+  config.vm.network "forwarded_port", guest: 9090, host: 9090  # Prometheus
+
+  # Скрипт для установки необходимых пакетов и настройки окружения
+  config.vm.provision "shell", inline: <<-SHELL
+
+    # Установка Docker
+    sudo apt-get update
+    sudo apt-get install -y ca-certificates curl
+    sudo install -m 0755 -d /etc/apt/keyrings
+    sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+    sudo chmod a+r /etc/apt/keyrings/docker.asc
+    echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc]     https://download.docker.com/linux/ubuntu \
+    $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+    sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+   # Обновление пакетов
+    sudo apt-get update
+    sudo apt-get upgrade -y
+    sudo apt-get install -y wget gnupg2 software-properties-common   
+    sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+
+   # Установка Golang
+     sudo wget https://go.dev/dl/go1.22.4.linux-amd64.tar.gz
+     sudo tar -C /usr/local -xzf go1.22.4.linux-amd64.tar.gz
+     echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile
+     source ~/.profile
+
+    # Установка Prometheus
+    sudo apt-get install -y prometheus
+    sudo systemctl start prometheus
+    sudo systemctl enable prometheus
+
+    # Установка PostgreSQL
+    sudo apt-get install -y postgresql postgresql-contrib
+    sudo systemctl start postgresql
+    sudo systemctl enable postgresql
+
+    # Настройка PostgreSQL пользователя и базы данных
+    sudo -u postgres psql -c "CREATE USER just_ai WITH PASSWORD 'just_ai';"
+    sudo -u postgres psql -c "CREATE DATABASE users_db OWNER just_ai;"
+    sudo -u postgres psql -c "ALTER USER just_ai WITH SUPERUSER;"
+
+    # Установка Grafana
+    sudo apt-get install -y apt-transport-https
+    sudo wget -q -O - https://packages.grafana.com/gpg.key | sudo apt-key add -
+    echo "deb https://packages.grafana.com/oss/deb stable main" | sudo tee /etc/apt/sources.list.d/grafana.list
+    sudo apt-get update
+    sudo apt-get install -y grafana
+    sudo systemctl start grafana-server
+    sudo systemctl enable grafana-server
+
+    # Создание таблицы для метрик в PostgreSQL
+    PGPASSWORD=just_ai psql -U just_ai -d users_db -h localhost -c "
+    CREATE TABLE users (
+        id SERIAL PRIMARY KEY,
+        first_name VARCHAR(255),
+        last_name VARCHAR(255),
+        nickname VARCHAR(255),
+        password VARCHAR(255),
+        registration_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );"
+    
+
+    PGPASSWORD=just_ai psql -U just_ai -d users_db -h localhost -c "
+    CREATE TABLE registration_attempts (
+        id SERIAL PRIMARY KEY,
+        attempt_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        success BOOLEAN
+    );"    
+  
+  SHELL
+end
